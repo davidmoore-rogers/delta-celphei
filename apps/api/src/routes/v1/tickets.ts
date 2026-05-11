@@ -5,13 +5,19 @@ import {
   UpdateTicketInput,
   CreateTicketCommentInput,
   CreateTaskInput,
+  PostDecisionInput,
 } from "@celphei/shared";
 import { requireAuth } from "../../auth/middleware.js";
 import { createTicket, getTicket, listTickets, updateTicket } from "../../services/tickets.js";
 import { createTask, listTasksForTicket } from "../../services/tasks.js";
 import { getPrisma } from "../../db/prisma.js";
 import { emitEvent } from "../../events/bus.js";
-import { notFound } from "../../middleware/errorHandler.js";
+import { HttpError, conflict, forbidden, notFound } from "../../middleware/errorHandler.js";
+import {
+  getTicketApprovalSummary,
+  isEligibleApprover,
+  recordDecision,
+} from "../../approvals/lifecycle.js";
 
 export const ticketsRouter = Router();
 
@@ -206,6 +212,104 @@ ticketsRouter.delete("/:id/assets/:assetId", async (req, res, next) => {
     });
     res.status(204).end();
   } catch (err) {
+    next(err);
+  }
+});
+
+// Approvals on a ticket
+ticketsRouter.get("/:id/approvals", async (req, res, next) => {
+  try {
+    const ticketId = req.params.id as string;
+    const requests = await getPrisma().approvalRequest.findMany({
+      where: { ticketId },
+      orderBy: { createdAt: "asc" },
+      include: {
+        rule: { select: { name: true, approverGroupId: true, approverRole: true } },
+        decisions: {
+          orderBy: { decidedAt: "asc" },
+          include: { approver: { select: { displayName: true } } },
+        },
+      },
+    });
+    const groupIds = requests
+      .map((r) => r.rule.approverGroupId)
+      .filter((x): x is string => !!x);
+    const groups = groupIds.length
+      ? await getPrisma().group.findMany({ where: { id: { in: groupIds } }, select: { id: true, name: true } })
+      : [];
+    const groupNameById = new Map(groups.map((g) => [g.id, g.name]));
+
+    const summary = await getPrisma().$transaction((tx) => getTicketApprovalSummary(tx, ticketId));
+
+    res.json({
+      requests: requests.map((r) => ({
+        id: r.id,
+        ticketId: r.ticketId,
+        ruleId: r.ruleId,
+        ruleName: r.rule.name,
+        requiredCount: r.requiredCount,
+        state: r.state,
+        approverGroupId: r.rule.approverGroupId,
+        approverGroupName: r.rule.approverGroupId ? groupNameById.get(r.rule.approverGroupId) ?? null : null,
+        approverRole: r.rule.approverRole,
+        decisions: r.decisions.map((d) => ({
+          id: d.id,
+          requestId: d.requestId,
+          approverId: d.approverId,
+          approverDisplayName: d.approver.displayName,
+          decision: d.decision,
+          comment: d.comment,
+          decidedAt: d.decidedAt.toISOString(),
+        })),
+        createdAt: r.createdAt.toISOString(),
+        resolvedAt: r.resolvedAt?.toISOString() ?? null,
+      })),
+      ...summary,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+ticketsRouter.post("/:id/approvals/:requestId/decisions", async (req, res, next) => {
+  try {
+    const ticketId = req.params.id as string;
+    const requestId = req.params.requestId as string;
+    const input = PostDecisionInput.parse(req.body);
+    const userId = req.session!.userId;
+    const userRoles = req.session!.roles;
+
+    const result = await getPrisma().$transaction(async (tx) => {
+      const eligible = await isEligibleApprover(tx, { requestId, userId, userRoles });
+      if (!eligible) throw forbidden("Not eligible to approve this request");
+      // Make sure the request belongs to this ticket (path-mismatch guard).
+      const req0 = await tx.approvalRequest.findUnique({ where: { id: requestId } });
+      if (!req0 || req0.ticketId !== ticketId) throw notFound("Approval request");
+      return recordDecision(tx, {
+        requestId,
+        approverId: userId,
+        decision: input.decision,
+        comment: input.comment,
+      });
+    });
+
+    const ticket = await getPrisma().ticket.findUnique({
+      where: { id: ticketId },
+      select: { ticketNumber: true },
+    });
+    await emitEvent({
+      source: "approval",
+      actorId: userId,
+      subject: ticket?.ticketNumber ?? ticketId,
+      message: `${input.decision === "Approve" ? "Approved" : "Rejected"} request on ${ticket?.ticketNumber}: ${result.state}`,
+    });
+
+    res.json(result);
+  } catch (err) {
+    if ((err as { code?: string }).code === "already_decided") {
+      return next(conflict("You have already decided on this request"));
+    }
+    if (err instanceof HttpError) return next(err);
     next(err);
   }
 });

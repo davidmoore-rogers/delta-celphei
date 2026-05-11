@@ -20,6 +20,8 @@ import { searchRouter } from "./routes/v1/search.js";
 import { eventsRouter } from "./routes/v1/events.js";
 import { settingsRouter } from "./routes/v1/settings.js";
 import { apiTokensRouter } from "./routes/v1/apiTokens.js";
+import { approvalRulesRouter } from "./routes/v1/approvalRules.js";
+import { groupsRouter } from "./routes/v1/groups.js";
 import { WEB_DIST } from "./utils/paths.js";
 
 export function buildApp(): Express {
@@ -70,6 +72,8 @@ export function buildApp(): Express {
   app.use("/api/v1/events", eventsRouter);
   app.use("/api/v1/settings", settingsRouter);
   app.use("/api/v1/api-tokens", apiTokensRouter);
+  app.use("/api/v1/approval-rules", approvalRulesRouter);
+  app.use("/api/v1/groups", groupsRouter);
 
   // Serve built SPA (apps/web/dist) when present.
   if (existsSync(WEB_DIST)) {

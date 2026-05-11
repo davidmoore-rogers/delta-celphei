@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { queryClient } from "../../lib/queryClient";
+import { ApprovalsPanel } from "./ApprovalsPanel";
 
 interface TicketDTO {
   id: string;
@@ -94,6 +95,8 @@ export function TicketDetail() {
 
         <TasksPanel ticketId={t.id} tasks={tasks.data?.items ?? []} />
 
+        <ApprovalsPanel ticketId={t.id} />
+
         <CommentsPanel ticketId={t.id} comments={comments.data?.items ?? []} />
       </div>
 
@@ -128,7 +131,6 @@ export function TicketDetail() {
             </ul>
           )}
         </SidebarBlock>
-        <SidebarBlock title="Approvals"><div className="text-xs text-ink-3">Phase 2</div></SidebarBlock>
       </aside>
     </div>
   );

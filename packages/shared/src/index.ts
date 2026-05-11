@@ -7,3 +7,6 @@ export * from "./schemas/setup.js";
 export * from "./schemas/event.js";
 export * from "./schemas/search.js";
 export * from "./schemas/setting.js";
+export * from "./schemas/approval.js";
+export * from "./schemas/group.js";
+export * from "./schemas/serverSettings.js";

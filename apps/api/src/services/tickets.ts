@@ -7,6 +7,7 @@ import {
 import { getPrisma } from "../db/prisma.js";
 import { emitEvent } from "../events/bus.js";
 import { badRequest, conflict, notFound } from "../middleware/errorHandler.js";
+import { reconcileApprovalsForTicket } from "../approvals/lifecycle.js";
 
 type TicketWithRels = Prisma.TicketGetPayload<{
   include: {
@@ -69,6 +70,8 @@ export async function createTicket(input: CreateTicketInput, actorId: string): P
       },
     });
 
+    await reconcileApprovalsForTicket(tx, t, actorId);
+
     return t;
   });
 
@@ -99,6 +102,26 @@ export async function updateTicket(
     throw conflict(
       `Cannot close ${existing.ticketNumber}: ${tasksOpen.length} task(s) still open and ticket type requires all tasks complete`,
     );
+  }
+
+  // Block closure when there are open approval requests OR any rejected request blocks resolution.
+  if (input.status === "Closed") {
+    const summary = await prisma.approvalRequest.findMany({
+      where: { ticketId: id, state: { in: ["Pending", "Rejected"] } },
+      select: { state: true },
+    });
+    const pending = summary.filter((r) => r.state === "Pending").length;
+    const rejected = summary.filter((r) => r.state === "Rejected").length;
+    if (pending > 0) {
+      throw conflict(
+        `Cannot close ${existing.ticketNumber}: ${pending} approval request(s) still pending`,
+      );
+    }
+    if (rejected > 0) {
+      throw conflict(
+        `Cannot close ${existing.ticketNumber}: ${rejected} approval request(s) rejected (re-open or cancel them first)`,
+      );
+    }
   }
 
   const changes: Prisma.JsonObject = {};
@@ -157,6 +180,10 @@ export async function updateTicket(
           skipDuplicates: true,
         });
       }
+    }
+    // Re-evaluate approvals when any rule-input field could have changed.
+    if (changes.priority || changes.status || changes.assigneeId || changes.teamId || changes.customFields) {
+      await reconcileApprovalsForTicket(tx, u, actorId);
     }
     return u;
   });

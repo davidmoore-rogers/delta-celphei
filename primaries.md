@@ -33,6 +33,9 @@ Per-pattern sections:
 - [Setup wizard step](#setup-wizard-step)
 - [Vanilla-JS wizard navigation](#vanilla-js-wizard-navigation)
 - [Admin-only multi-role guard](#admin-only-multi-role-guard)
+- [Recursive visual editor for nested JSON](#recursive-visual-editor-for-nested-json)
+- [Two-pane admin list + detail](#two-pane-admin-list--detail)
+- [Pure evaluator module (no DB)](#pure-evaluator-module-no-db)
 
 ---
 
@@ -263,3 +266,63 @@ Per-pattern sections:
 - Decide: pure role check (use `requireRole`), or scope-of-record check (use `requireManagerOf`)? Most admin pages are the former; team-scoped pages are the latter.
 - Add to BOTH the backend route AND the frontend route. The frontend gate is for UX (avoid a fetch); the backend gate is the security boundary.
 - If the page should appear in the sidebar, add a role-conditional render in `AppShell.tsx`.
+
+---
+
+## Recursive visual editor for nested JSON
+
+**What it is:** A React editor for tree-shaped JSON (e.g., approval-rule expressions, future workflow conditions) where each node can be a leaf or a combinator that contains more nodes.
+
+**Canonical implementation:** [`apps/web/src/features/admin/approvalRules/ExpressionEditor.tsx`](apps/web/src/features/admin/approvalRules/ExpressionEditor.tsx).
+
+**Key conventions:**
+- Single recursive component (`ExpressionEditor`). Self-references for nested combinator clauses. `depth` prop is passed only for alternating background shades — never for behavior.
+- Controlled component: `value` + `onChange(next)`. No internal state for the tree itself; tracking-only state (e.g., picker open) lives in inner components.
+- Each level passes a stable `onRemove` callback to its children so removing a clause doesn't require a separate "delete" dispatch system. Top-level call site passes `onRemove={undefined}` to hide remove on root.
+- Type-shape switches (leaf ↔ combinator ↔ NOT) are admin-driven: small dropdown changes the `op` field and the child components pick it up. The renderer uses type-narrowing helpers (`isCombinator`, `isNot`) to discriminate.
+- The form does NOT throw on a partially-edited tree (e.g., empty value field). Validation runs on save by the server — the editor is for shaping intent, the API is the gate.
+- Provides an `emptyExpression()` helper that callers use to seed new rules so they start with a sensible default (a single empty `AND`).
+
+**When adding a new instance:**
+- New combinator: extend the shared zod schema's union, add a `isXxx()` discriminator helper, add a branch in the renderer. Keep one component file — branching is cheap, splitting per node type fragments the keyboard-and-state model.
+- New leaf field type: extend the inner leaf renderer's input switch. The recursive root component shouldn't change.
+- If the editor grows past one screen, split out the leaf editor into a sibling component but keep the recursive combinator/not branches in the same file.
+
+---
+
+## Two-pane admin list + detail
+
+**What it is:** A full-page admin view with a vertical list on the left (item selector) and an editor on the right (selected item). Used when admins manage a small/medium set of records each with multi-field state.
+
+**Canonical implementation:** [`apps/web/src/features/admin/AdminGroups.tsx`](apps/web/src/features/admin/AdminGroups.tsx) and [`apps/web/src/features/admin/AdminTicketTypes.tsx`](apps/web/src/features/admin/AdminTicketTypes.tsx).
+
+**Key conventions:**
+- Layout: `grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4` (or `[1fr_1fr]` when both panes carry similar weight). Both panes wrapped in `bg-surface-2 border border-edge rounded-lg`.
+- Selection state lives in the parent component via `useState<string | null>`. Selecting an item changes the right pane's content; sub-pane components receive the `id` as a prop and own their own queries (so unmount-on-switch clears their state).
+- The list pane shows item name + a single small piece of secondary data per row (count of members, status, etc.). No more — anything richer belongs in the right pane.
+- The right pane has an empty state when nothing is selected: "Select a X to ..." — small ink-3 text, centered.
+- For items with side state that should reset when switching selection (form drafts, etc.), put a `useEffect` keyed on the selected id at the top of the detail component to reset internal state. See `TypeEditor` in `AdminTicketTypes.tsx`.
+
+**When adding a new instance:**
+- Use this for admin pages where each record has ≥3 fields of state. For flatter lists (just name + delete), a one-pane table is simpler — see `AdminTeams.tsx`.
+- The sub-pane should declare its own TanStack Query keys (`["groups", id, "members"]`), not pull from the parent. Independent invalidation lets a single mutation refresh just one pane.
+
+---
+
+## Pure evaluator module (no DB)
+
+**What it is:** A self-contained TypeScript module that takes a domain object + a config (rule expression, query, etc.) and returns a result synchronously. No DB, no I/O, no framework imports — only language and pure utility imports.
+
+**Canonical implementation:** [`apps/api/src/approvals/expression.ts`](apps/api/src/approvals/expression.ts) (+ `expression.test.ts` with 14 tests).
+
+**Key conventions:**
+- Single `export function evaluate(expr, context): T` entry point. Default-export forbidden.
+- Module-level constants for domain knowledge that admins shouldn't have to encode (e.g., `ORDERED_VOCABULARIES`). Documented inline so the rationale survives.
+- TOTAL: any unrecognized operator, unknown field, or type mismatch returns a sentinel value (typically `false`) — NEVER throws. Production callers wrap in try/catch defensively, but the contract is "evaluate is total".
+- Dedicated `*.test.ts` sibling with exhaustive coverage. Pure modules are the cheapest things to test; do it.
+- Imports are restricted: types from `@celphei/shared`, language built-ins, maybe `@prisma/client` types-only. No `getPrisma`, no fetch, no fs.
+
+**When adding a new instance:**
+- Pull the function into its own module (don't bury inside a service). Future maintainers will need to grep for the canonical evaluator.
+- Write the test file BEFORE wiring it into production. The discipline that pays off here is locking the spec in tests so refactors are safe.
+- Resist async. If the evaluator needs to look up data, accept it as input (the caller fetches and passes). Keeping evaluator total + sync is the property that makes it a primary.

@@ -78,6 +78,9 @@ export function AppShell() {
               <div className="px-3 py-1 text-xs font-semibold uppercase tracking-wider text-ink-3">Admin</div>
               <SidebarLink to="/admin/users" label="Users" />
               <SidebarLink to="/admin/teams" label="Teams" />
+              <SidebarLink to="/admin/groups" label="Groups" />
+              <SidebarLink to="/admin/ticket-types" label="Ticket types" />
+              <SidebarLink to="/admin/approval-rules" label="Approval rules" />
               <SidebarLink to="/settings" label="Settings" />
             </>
           )}

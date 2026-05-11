@@ -25,7 +25,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 
 ## Sections
 
-- [Cross-cutting concerns](#cross-cutting-concerns) (6)
+- [Cross-cutting concerns](#cross-cutting-concerns) (7)
 - [Per-service touches](#per-service-touches) — alphabetical
 
 ---
@@ -174,6 +174,39 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 
 ---
 
+## cross-cutting/approval-lifecycle
+
+**What it is:** Rule-based approval engine + the `ApprovalRequest` state machine that drives ticket-close gating.
+
+**Writers** (places that mutate or emit this state):
+- `apps/api/src/approvals/lifecycle.ts:reconcileApprovalsForTicket()` — only place that creates/cancels `ApprovalRequest` rows. Called from inside the ticket create/update Prisma transaction.
+- `apps/api/src/approvals/lifecycle.ts:recordDecision()` — only place that inserts `ApprovalDecision` rows and transitions `ApprovalRequest.state` to `Approved`/`Rejected`.
+- `apps/api/src/services/tickets.ts:createTicket()` — calls `reconcileApprovalsForTicket` once after the new ticket row is created.
+- `apps/api/src/services/tickets.ts:updateTicket()` — calls `reconcileApprovalsForTicket` whenever any rule-input field changes (`priority`, `status`, `assigneeId`, `teamId`, `customFields`).
+- `apps/api/src/routes/v1/tickets.ts:POST /:id/approvals/:requestId/decisions` — entry point for decisions; calls `recordDecision` inside a `$transaction` after `isEligibleApprover` check.
+- `apps/api/src/routes/v1/approvalRules.ts` — admin CRUD for `ApprovalRule` rows (does NOT touch ApprovalRequest rows — see invariant below).
+
+**Readers:**
+- `apps/api/src/services/tickets.ts:updateTicket()` — close gate reads `ApprovalRequest.state` and refuses closure when any non-cancelled request is `Pending` or `Rejected`.
+- `apps/api/src/routes/v1/tickets.ts:GET /:id/approvals` — serializes requests + decisions + summary for the `ApprovalsPanel`.
+- `apps/api/src/approvals/lifecycle.ts:isEligibleApprover()` — checks roles + group membership against the rule's `approverGroupId`/`approverRole`.
+- `apps/web/src/features/tickets/ApprovalsPanel.tsx` — renders per-request state chip + decisions; surfaces Approve/Reject buttons.
+
+**Invariants:**
+- `ApprovalRule` edits do NOT auto re-evaluate existing tickets. `ApprovalRequest.ruleId` is a foreign key — the originally-matched rule is preserved. Rule edits affect future evaluations only. (Phase 3 will add an explicit "re-evaluate open tickets" action.)
+- Diff semantics on reconcile: new match → create Pending; still matched → leave alone (preserves in-flight decisions); no-longer-matched + Pending → cancel; no-longer-matched + Approved/Rejected → keep as history. Never delete a row that has decisions attached.
+- One decision per `(requestId, approverId)`. Enforced in `recordDecision` via the decisions-list check before insert; database does NOT have the unique constraint (decisions are append-only audit), so the application MUST be the single writer.
+- A request transitions to `Rejected` on the FIRST `Reject` decision regardless of `requiredCount`. `Approved` requires `approvals >= requiredCount`. No "majority" semantics — every reject is a hard veto.
+- Empty rule (no group + no role) means "any authenticated user may decide". Admins ALWAYS pass `isEligibleApprover`.
+
+**When changing this:**
+- New operator on the rule engine: add to `RULE_LEAF_OPS` in `@celphei/shared/schemas/approval.ts`, add a `case` in `evalLeaf` in `expression.ts`, add tests to `expression.test.ts`, expose the op in `ExpressionEditor.tsx`.
+- New field path (`assignee.email`, etc.): add a `readField` branch in `expression.ts` AND surface it in the `FIELDS` list in `ExpressionEditor.tsx`. The two MUST stay in sync — admins picking a field the engine doesn't know returns `undefined` (silently false).
+- If you change the diff semantics in `reconcileApprovalsForTicket`, you'll likely break the "preserves in-flight decisions" invariant. Add a regression test before merging.
+- If you add a new rule-input field to `Ticket`, extend the `if (changes.X)` guard in `updateTicket` so reconcile runs when it changes.
+
+---
+
 ## cross-cutting/task-blocks-close
 
 **What it is:** Ticket-close gate driven by `TicketType.tasksBlockClose` + open task count.
@@ -196,6 +229,7 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 **When changing this:**
 - If a new task status is added that's "complete-ish but not done" (e.g. `Blocked`), decide whether it blocks close and update the filter in `updateTicket()`.
 - The seeded defaults are operator-overridable on first run — don't change them silently in `seedBuiltInTypes()` without a migration path for existing installs (`upsert` only updates `name + isBuiltIn`).
+- The close gate composes with `cross-cutting/approval-lifecycle` — both are independent reasons to refuse closure. Don't merge the checks into one; the error messages differ and users need both signals.
 
 ---
 
@@ -394,3 +428,102 @@ This file complements [CLAUDE.md](CLAUDE.md) — CLAUDE.md is the narrative arch
 **When changing this:**
 - Adding a new built-in type: append to the `types` array. The Prisma `upsert` is idempotent so re-running is safe.
 - Changing the default `schema` for an existing built-in: existing installs WILL keep their schema (upsert update doesn't touch it). To roll out a schema change, ship a migration or admin UI tooling.
+
+---
+
+## approvals/expression (Phase 2)
+
+**What it owns:** Pure rule expression evaluator. Operators, ordered vocabularies, leaf/combinator/not semantics.
+
+**Public API:** `apps/api/src/approvals/expression.ts`: `evaluate(expr, ticket)`, `type EvalTicket`. Tests in `expression.test.ts` (14).
+
+**Cross-service deps:** None (intentional — this is a pure module with no DB or framework imports).
+
+**Used by:**
+- `apps/api/src/approvals/lifecycle.ts:evaluateRulesForTicket()` — the sole production caller.
+- `apps/api/src/approvals/expression.test.ts` — unit tests.
+
+**Invariants:**
+- Pure: no DB, no I/O, no async. Synchronous return.
+- Total: any unknown operator or unknown field path returns `false` rather than throwing. Admins can't crash ticket ops by saving a malformed rule.
+- Ordered vocabularies in `ORDERED_VOCABULARIES` define `lt/lte/gt/gte` order for non-numeric strings. Currently: `["low","medium","high","critical"]`, `["p4","p3","p2","p1"]` (P1 = highest severity), `["info","warn","error"]`.
+- Numeric coercion: when both sides of a comparison parse as finite numbers, numeric compare wins over vocab/lexicographic.
+
+**When changing this:**
+- New operator: add to the `RULE_LEAF_OPS` constant in `@celphei/shared/schemas/approval.ts`, add a case in `evalLeaf`, add at least one test per branch. The `ExpressionEditor.tsx` dropdown reads from the shared constant — no client-side wire-up needed.
+- New ordered vocabulary: append to `ORDERED_VOCABULARIES`. All entries lowercase, ordered low → high. Tests should pin the boundary cases.
+- DON'T add async or DB lookups here. Field resolution stays string-only; if you need to fan out to "is requester a member of this group", do it in `lifecycle.ts` or `isEligibleApprover`.
+
+---
+
+## approvals/lifecycle (Phase 2)
+
+**What it owns:** `ApprovalRequest` diff reconciliation + `ApprovalDecision` recording + per-ticket summary + eligibility check.
+
+**Public API:** `evaluateRulesForTicket`, `reconcileApprovalsForTicket`, `recordDecision`, `getTicketApprovalSummary`, `isEligibleApprover`.
+
+**Cross-service deps:** `db/prisma`, `events/bus.emitEvent`, `approvals/expression.evaluate`.
+
+**Used by:**
+- `services/tickets.ts:createTicket()` + `updateTicket()` — call `reconcileApprovalsForTicket` inside the same Prisma transaction as the ticket write.
+- `services/tickets.ts:updateTicket()` close gate — reads `ApprovalRequest.state`.
+- `routes/v1/tickets.ts:POST /:id/approvals/:requestId/decisions` — calls `recordDecision` (+ `isEligibleApprover` first).
+- `routes/v1/tickets.ts:GET /:id/approvals` — calls `getTicketApprovalSummary`.
+
+**Invariants:**
+- See [cross-cutting/approval-lifecycle](#cross-cuttingapproval-lifecycle).
+- `reconcileApprovalsForTicket` MUST be called with the Prisma `tx` argument from a containing transaction — otherwise we lose the "ticket + approvals atomic" invariant.
+- `recordDecision` throws an error with `code: "already_decided"` if the approver already decided on the request; routes translate to 409.
+
+**When changing this:**
+- New request states beyond `Pending/Approved/Rejected/Cancelled`: update the Prisma enum, the shared `ApprovalState` constant, every branch in `recordDecision`, and the close gate in `services/tickets.updateTicket`.
+- If you change `getTicketApprovalSummary`'s notion of "approved" (currently: `total > 0 && approvedCount === total`), audit ALL downstream readers. The route returns this verbatim to the client.
+
+---
+
+## services/server-settings (Phase 2 — Time/NTP + Certificates + Maintenances)
+
+**What it owns:** The three Phase 2 Settings tabs: time/NTP config, certificate info (read-only), and maintenance windows.
+
+**Public API:** Inlined in `apps/api/src/routes/v1/settings.ts` (no dedicated service module; routes hit Prisma directly — extract if business logic grows).
+
+**Cross-service deps:** `db/prisma`, `config/env` (for the Certificates tab's `TRUST_PROXY` read).
+
+**Used by:**
+- `apps/web/src/features/settings/TimeNtp.tsx` — GET `/time-ntp` (10s polling for server-clock display), PATCH `/time-ntp` (timezone), POST/DELETE `/time-ntp/servers/:id` (NtpServer CRUD).
+- `apps/web/src/features/settings/Certificates.tsx` — GET `/certificates` (read-only).
+- `apps/web/src/features/settings/Maintenances.tsx` — full CRUD on `/maintenances`.
+
+**Invariants:**
+- `NtpServer.host` is unique. Upsert by host on POST (so admins can update an existing server's priority by re-submitting).
+- NTP servers are CONSULTATIVE — Celphei does NOT control the host OS clock. The stored list is for audit and a future ntp-status job (Phase 3).
+- `Maintenance` validation: `endsAt > startsAt`. Enforced via zod `.refine()` on both create and update (the update refine handles the partial-update case where only one of startsAt/endsAt is provided).
+- Certificates tab is intentionally read-only. Cert management lives at the reverse proxy. The route reads `env.TRUST_PROXY` and emits operator-facing notes.
+
+**When changing this:**
+- If you add cert upload (Phase 3+): introduce a `Certificate` Prisma model, a service module that holds the storage layer (filesystem? S3?), and a service-level uniqueness/validity check. Don't push that logic into the route file.
+- New maintenance severity beyond `info|warn|error`: update the zod enum in `@celphei/shared/schemas/serverSettings.ts`, the Prisma column default, the `SeverityChip` in `Maintenances.tsx`.
+
+---
+
+## services/approval-rules + services/groups (Phase 2)
+
+**What they own:** Admin CRUD for `ApprovalRule` rows and `Group` rows. Thin route layers over Prisma.
+
+**Public API:** `routes/v1/approvalRules.ts` (`approvalRulesRouter`) and `routes/v1/groups.ts` (`groupsRouter`).
+
+**Cross-service deps:** `db/prisma`.
+
+**Used by:**
+- `apps/web/src/features/admin/approvalRules/AdminApprovalRules.tsx` — list, create, update, delete; uses `/api/v1/ticket-types` to scope rules per type and `/api/v1/groups` for the approver picker.
+- `apps/web/src/features/admin/AdminGroups.tsx` — CRUD + member management.
+- `apps/api/src/approvals/lifecycle.ts:evaluateRulesForTicket()` reads `ApprovalRule` rows in production; it is INDEPENDENT of these admin routes (engine doesn't mutate rules).
+
+**Invariants:**
+- `ApprovalRule.ticketTypeId` is immutable in the UI (the modal editor doesn't expose changing it). To "move" a rule to another type, admins delete + recreate. Keeping the FK stable means historical `ApprovalRequest.ruleId` references stay consistent.
+- `GroupMember` PK is `(groupId, userId)` — duplicates are impossible. The route uses `upsert` so re-adding is idempotent.
+- Deleting a `Group` cascades to `GroupMember` rows but NOT to `ApprovalRule.approverGroupId` (set null via `onDelete: SetNull` in the schema). Pending approvals against that rule continue to exist; the rule's group simply becomes "any authenticated user" until an admin fixes it.
+
+**When changing this:**
+- New approver targeting (e.g., assignee's manager): add a column on `ApprovalRule`, extend `isEligibleApprover` in `lifecycle.ts`, extend the `ApprovalRuleEditor` form.
+- Bulk reassignment of pending requests when a rule changes: deliberately not implemented (see invariant in cross-cutting/approval-lifecycle). If you build it, it goes in a new service module — not in the routes — and emits one `Event` per affected request.

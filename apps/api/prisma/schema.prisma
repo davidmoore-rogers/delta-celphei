@@ -464,3 +464,32 @@ model IntegrationConnection {
 
   @@index([kind])
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Server settings — Time/NTP, Maintenances
+// ────────────────────────────────────────────────────────────────────────────
+
+model NtpServer {
+  id          String   @id @default(cuid())
+  host        String   @unique
+  priority    Int      @default(0)
+  isEnabled   Boolean  @default(true)
+  lastCheckAt DateTime?
+  lastStatus  String?
+  createdAt   DateTime @default(now())
+}
+
+model Maintenance {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  startsAt    DateTime
+  endsAt      DateTime
+  severity    String   @default("info") // info | warn | error
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([startsAt])
+  @@index([endsAt])
+}

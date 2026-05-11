@@ -6,6 +6,8 @@
 
 **Phase 1 ships:** monorepo scaffold, setup wizard (copied from Polaris's `setupServer` pattern), session auth + Argon2id local accounts, multi-role RBAC (Admin/Manager/HelpDesk/User), ticket+task CRUD with comments and history, Polaris asset client + linking, universal ⌘K search, events page with SSE live tail, Settings (Customization + API Tokens).
 
+**Phase 2 ships (current):** rule-based approval engine (pure expression evaluator + diff-based reconciliation + state machine), `Group` + `GroupMember`, admin UIs for `Approval rules` (visual condition builder), `Groups`, `Ticket types` (schema-field editor + `tasksBlockClose` toggle), the `ApprovalsPanel` on `TicketDetail` for approve/reject, and the remaining Settings tabs — `Time & NTP` (timezone + `NtpServer` CRUD), `Certificates` (read-only TLS-termination info), `Maintenances` (scheduled-window CRUD with `Maintenance` table). Ticket close is now blocked by `tasksBlockClose` *and* by unresolved approval state.
+
 **Version policy:** `<major>.<minor>` lives in `package.json` and is the single source of truth. Pre-release line is `0.x`. Patch is reserved for the git commit count when the runtime version helper lands (Phase 2+); for now `package.json` is `0.1.0`.
 
 ---
@@ -48,6 +50,10 @@ delta-celphei/
 │   │       │   ├── passwords.ts     # Argon2id hash/verify
 │   │       │   └── providers.ts     # authenticateLocal + listEnabledProviders (Phase 3 plugs in saml/oidc/ldap/polaris here)
 │   │       ├── events/bus.ts        # emitEvent() writer + in-process EventEmitter; consumed by /events SSE stream
+│   │       ├── approvals/           # Phase 2 — rule engine
+│   │       │   ├── expression.ts    # PURE evaluator. Operators eq/neq/in/nin/gt/gte/lt/lte/exists/and/or/not. Ordered vocabularies (low<medium<high<critical, P4<P3<P2<P1) make "risk gte high" semantically correct without admins assigning ranks. Malformed leaves return false rather than throw — admins can't crash ticket ops by saving a bad rule.
+│   │       │   ├── expression.test.ts  # 14 unit tests
+│   │       │   └── lifecycle.ts     # evaluateRulesForTicket + reconcileApprovalsForTicket (DIFF — preserves in-flight decisions on re-eval) + recordDecision (per-approver uniqueness + state recompute) + getTicketApprovalSummary + isEligibleApprover. Called from services/tickets.createTicket and updateTicket whenever rule-input fields could change.
 │   │       ├── integrations/polaris.ts  # PolarisAssetClient: env wins over DB IntegrationConnection; 5-min LRU cache
 │   │       ├── middleware/errorHandler.ts  # HttpError + ZodError translator, JSON error envelope
 │   │       ├── observability/
@@ -64,7 +70,9 @@ delta-celphei/
 │   │       │   ├── polaris.ts       # asset search + by-id proxy
 │   │       │   ├── search.ts        # universal search fan-out (tickets/tasks/users/assets)
 │   │       │   ├── events.ts        # paginated list + /stream (SSE)
-│   │       │   ├── settings.ts      # /customization GET/PATCH
+│   │       │   ├── settings.ts      # /customization GET/PATCH + Phase 2 tabs: /time-ntp (timezone + NtpServer CRUD), /certificates (read-only TLS info), /maintenances (scheduled-window CRUD)
+│   │       │   ├── approvalRules.ts # Phase 2 — /api/v1/approval-rules CRUD (admin writes)
+│   │       │   ├── groups.ts        # Phase 2 — /api/v1/groups CRUD + /:id/members
 │   │       │   └── apiTokens.ts     # CRUD; secret shown ONCE on create
 │   │       ├── services/
 │   │       │   ├── tickets.ts       # createTicket, updateTicket, listTickets, getTicket; ticket-number sequence per type; tasksBlockClose enforcement; UncheckedUpdateInput for scalar FKs
@@ -96,7 +104,8 @@ delta-celphei/
 │           │   ├── tickets/
 │           │   │   ├── TicketList.tsx            # Filter chips + paginated table
 │           │   │   ├── NewTicket.tsx             # Dynamic form rendered from TicketType.schema (FieldRenderer)
-│           │   │   └── TicketDetail.tsx          # Header + Description + TasksPanel + CommentsPanel + sidebar (Status changer, linked assets, approvals placeholder)
+│           │   │   ├── TicketDetail.tsx          # Header + Description + TasksPanel + ApprovalsPanel + CommentsPanel + sidebar (Status changer, linked assets)
+│           │   │   └── ApprovalsPanel.tsx        # Phase 2 — per-request state chip + decision history + Approve/Reject buttons (UI hides them for non-eligible users; server re-checks via isEligibleApprover)
 │           │   ├── search/CommandPalette.tsx     # ⌘K modal; 200ms debounce; ↑↓/Enter/Esc keys; opens asset hits in new tab
 │           │   ├── team/MyTeamPage.tsx           # Manager view: direct-report list + their tickets (per-report fan-out until Phase 2 ?assigneeIn=...)
 │           │   ├── events/EventsPage.tsx         # Admin-only; severity/source filters; Live toggle subscribes to /api/v1/events/stream
@@ -104,10 +113,18 @@ delta-celphei/
 │           │   │   ├── SettingsLayout.tsx        # 5-tab shell — Customization / Time & NTP / Certificates / Maintenances / API Tokens
 │           │   │   ├── Customization.tsx         # Phase 1 — org name, primary color, login banner, default tz
 │           │   │   ├── ApiTokens.tsx             # Phase 1 — create/revoke; secret revealed ONCE on create
-│           │   │   └── ComingSoon.tsx            # Placeholder for Phase 2 tabs (Time/NTP, Certificates, Maintenances)
+│           │   │   ├── TimeNtp.tsx               # Phase 2 — server-time display (10s refresh) + IANA tz + NtpServer CRUD
+│           │   │   ├── Certificates.tsx          # Phase 2 — read-only TLS-termination posture (driven by TRUST_PROXY)
+│           │   │   ├── Maintenances.tsx          # Phase 2 — scheduled maintenance windows with severity + start/end. Shows active/upcoming/past.
+│           │   │   └── ComingSoon.tsx            # Now unused; kept for future placeholders
 │           │   └── admin/
 │           │       ├── AdminUsers.tsx            # Role chip editor (multi-role assign)
-│           │       └── AdminTeams.tsx            # Team CRUD
+│           │       ├── AdminTeams.tsx            # Team CRUD
+│           │       ├── AdminGroups.tsx           # Phase 2 — Group CRUD + member picker (two-pane layout)
+│           │       ├── AdminTicketTypes.tsx      # Phase 2 — built-in + custom ticket-type editor: name, tasksBlockClose toggle, custom-field schema editor (key/label/type/required/options for selects)
+│           │       └── approvalRules/
+│           │           ├── AdminApprovalRules.tsx  # Phase 2 — list rules grouped by ticket type, modal editor
+│           │           └── ExpressionEditor.tsx     # Phase 2 — RECURSIVE visual condition builder: AND/OR/NOT/leaf clauses with field/op/value pickers, supports nested groups, custom.* fields, comma-separated values for in/nin
 │           ├── lib/
 │           │   ├── api.ts           # fetch wrapper: credentials: "include", attaches X-CSRF-Token on mutations, JSON error envelope translator
 │           │   ├── auth.ts          # useMe() hook — fetches /api/v1/auth/me, stashes csrfToken in api module
@@ -202,7 +219,19 @@ The single renderer in `features/tickets/NewTicket.tsx#renderInput()` maps `Tick
 ### 15. Built-in ticket types are idempotent-seeded
 `apps/api/src/seed/builtInTypes.ts` is called from two places: (a) the wizard's finalize transaction (so a fresh install has them immediately), and (b) `pnpm db:seed` via `apps/api/prisma/seed.ts` (so devs can re-seed against an existing DB). Both upsert by `slug` and only update the `name + isBuiltIn` flag — operator customizations to `prefix`, `schema`, `tasksBlockClose` survive re-seeds.
 
-### 16. Before any commit: read CLAUDE.md, touches.md, primaries.md
+### 16. Approval rules are snapshot via `ApprovalRequest.ruleId`
+When an admin edits an `ApprovalRule`, open `ApprovalRequest` rows DO NOT silently re-evaluate. `ApprovalRequest.ruleId` is a foreign key, so the original rule that matched is preserved as historical record. Admins re-run reconciliation explicitly per ticket (Phase 3 will add a bulk "re-evaluate open tickets" action). This prevents rule edits from invalidating in-flight decisions or surprise-clearing a CAB queue.
+
+### 17. Approval re-evaluation runs DIFF, not REPLACE
+`reconcileApprovalsForTicket(tx, ticket, actorId)` compares the current set of matching rules against existing `ApprovalRequest` rows: new match → create Pending; still matched → leave alone (preserves in-flight decisions); no longer matched + Pending → cancel; no longer matched + Approved/Rejected → keep as history. This is the canonical lifecycle pattern — if you need to invalidate an in-flight approval (e.g., admin overrode), delete or cancel it explicitly rather than rewriting the diff logic.
+
+### 18. Ticket close gate: tasks AND approvals
+`services/tickets.updateTicket` blocks `status: "Closed"` for two independent reasons:
+1. `TicketType.tasksBlockClose === true` AND any task not in `Done`/`Cancelled` → 409 conflict.
+2. Any non-cancelled `ApprovalRequest` is still `Pending` OR is `Rejected` → 409 conflict.
+The two gates compose — closing a Change with tasksBlockClose=true and a pending CAB approval surfaces whichever blocker is found first. UX exposes the message verbatim so users know which to clear.
+
+### 19. Before any commit: read CLAUDE.md, touches.md, primaries.md
 Three files form the architecture record. If your change moves a service boundary, breaks an invariant, or replaces a canonical implementation, **update the relevant file in the same commit**. This is the only mechanism keeping regression-prone relationships visible without rereading every consumer.
 
 ---
