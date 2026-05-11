@@ -35,7 +35,7 @@ export function startSetupServer(): void {
   // Serve wizard static files (if present).
   if (existsSync(PUBLIC_DIR) && statSync(PUBLIC_DIR).isDirectory()) {
     app.use(express.static(PUBLIC_DIR));
-    app.get("*", (req, res, next) => {
+    app.get("/{*splat}", (req, res, next) => {
       if (req.path.startsWith("/api")) return next();
       const indexPath = path.join(PUBLIC_DIR, "setup.html");
       if (existsSync(indexPath)) return res.sendFile(indexPath);

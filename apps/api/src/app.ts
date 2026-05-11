@@ -74,7 +74,7 @@ export function buildApp(): Express {
   // Serve built SPA (apps/web/dist) when present.
   if (existsSync(WEB_DIST)) {
     app.use(express.static(WEB_DIST));
-    app.get("*", (req: Request, res: Response, next: NextFunction) => {
+    app.get("/{*splat}", (req: Request, res: Response, next: NextFunction) => {
       if (req.path.startsWith("/api") || req.path.startsWith("/health") || req.path.startsWith("/metrics")) {
         return next();
       }
