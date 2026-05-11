@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Celphei — Setup</title>
+  <link rel="stylesheet" href="/setup.css" />
+</head>
+<body>
+  <div class="setup-wrapper">
+    <div class="setup-card" id="setup-card">
+      <div class="brand">
+        <span class="brand-mark">◆</span>
+        <span class="brand-name">Delta Celphei</span>
+        <span class="brand-subtitle">First-run setup</span>
+      </div>
+
+      <ol class="stepper" id="stepper" aria-label="Setup progress"></ol>
+
+      <!-- Step 1: Database -->
+      <section class="step-panel visible" data-step="1" aria-labelledby="step1-title">
+        <h2 id="step1-title">Database</h2>
+        <p class="step-desc">Celphei needs a PostgreSQL 15+ database. Provide credentials for an account that can create the database (if it doesn't already exist).</p>
+        <div class="form-row-2">
+          <label>Host<input name="db.host" value="localhost" autocomplete="off" /></label>
+          <label>Port<input name="db.port" type="number" value="5432" /></label>
+        </div>
+        <div class="form-row-2">
+          <label>Username<input name="db.username" value="postgres" autocomplete="off" /></label>
+          <label>Password<input name="db.password" type="password" autocomplete="off" /></label>
+        </div>
+        <div class="form-row-2">
+          <label>Database name<input name="db.database" value="celphei" autocomplete="off" /></label>
+          <label class="checkbox-row">
+            <input name="db.ssl" type="checkbox" />
+            <span>Use SSL</span>
+          </label>
+        </div>
+        <label class="checkbox-row" data-ssl-only style="display:none">
+          <input name="db.sslAllowSelfSigned" type="checkbox" />
+          <span>Allow self-signed certificate</span>
+        </label>
+        <div class="actions">
+          <button class="btn-secondary" type="button" data-action="test-connection">Test connection</button>
+        </div>
+        <div class="test-result" data-test-result="db" hidden></div>
+      </section>
+
+      <!-- Step 2: Admin account -->
+      <section class="step-panel" data-step="2" aria-labelledby="step2-title">
+        <h2 id="step2-title">Administrator account</h2>
+        <p class="step-desc">This is the first user. They get the Admin role.</p>
+        <div class="form-row-2">
+          <label>Display name<input name="admin.displayName" autocomplete="off" /></label>
+          <label>Email<input name="admin.email" type="email" autocomplete="off" /></label>
+        </div>
+        <div class="form-row-2">
+          <label>Password<input name="admin.password" type="password" autocomplete="new-password" /></label>
+          <label>Confirm password<input name="admin.passwordConfirm" type="password" autocomplete="new-password" /></label>
+        </div>
+        <ul class="password-rules" id="pw-rules">
+          <li data-rule="min-length"><span class="rule-icon">○</span> At least 8 characters</li>
+          <li data-rule="upper"><span class="rule-icon">○</span> An uppercase letter</li>
+          <li data-rule="lower"><span class="rule-icon">○</span> A lowercase letter</li>
+          <li data-rule="number"><span class="rule-icon">○</span> A number</li>
+          <li data-rule="special"><span class="rule-icon">○</span> A special character</li>
+          <li data-rule="match"><span class="rule-icon">○</span> Passwords match</li>
+        </ul>
+      </section>
+
+      <!-- Step 3: App settings -->
+      <section class="step-panel" data-step="3" aria-labelledby="step3-title">
+        <h2 id="step3-title">Application</h2>
+        <p class="step-desc">Server port and secrets. The wizard generates strong defaults; regenerate if you need to.</p>
+        <div class="form-row-2">
+          <label>HTTP port<input name="app.port" type="number" value="3000" /></label>
+          <label></label>
+        </div>
+        <label>Session secret
+          <input name="app.sessionSecret" autocomplete="off" />
+        </label>
+        <label>Encryption key
+          <input name="app.encryptionKey" autocomplete="off" />
+        </label>
+        <div class="form-row-2">
+          <label>Health token<input name="app.healthToken" autocomplete="off" /></label>
+          <label>Metrics token<input name="app.metricsToken" autocomplete="off" /></label>
+        </div>
+        <div class="actions">
+          <button class="btn-secondary" type="button" data-action="regenerate-secrets">Regenerate</button>
+        </div>
+      </section>
+
+      <!-- Step 4: Organization -->
+      <section class="step-panel" data-step="4" aria-labelledby="step4-title">
+        <h2 id="step4-title">Organization <span class="step-optional">(optional)</span></h2>
+        <p class="step-desc">Branding shown in the UI. You can change these later under Settings → Customization.</p>
+        <label>Organization name<input name="org.orgName" autocomplete="off" placeholder="Acme Inc." /></label>
+        <div class="form-row-2">
+          <label>Primary color<input name="org.primaryColor" type="color" value="#4a9eff" /></label>
+          <label></label>
+        </div>
+        <label>Login banner<textarea name="org.loginBanner" rows="3" placeholder="Authorized access only."></textarea></label>
+        <div class="form-row-2">
+          <label>Incident prefix<input name="org.ticketPrefixes.incident" value="INC" maxlength="8" /></label>
+          <label>Change prefix<input name="org.ticketPrefixes.change" value="CHG" maxlength="8" /></label>
+        </div>
+        <label>Request prefix<input name="org.ticketPrefixes.request" value="REQ" maxlength="8" /></label>
+      </section>
+
+      <!-- Step 5: Polaris -->
+      <section class="step-panel" data-step="5" aria-labelledby="step5-title">
+        <h2 id="step5-title">Polaris connection <span class="step-optional">(optional)</span></h2>
+        <p class="step-desc">Lets tickets reference live asset data from Polaris.</p>
+        <label>Base URL<input name="polaris.baseUrl" placeholder="https://polaris.example.com" /></label>
+        <label>API token<input name="polaris.apiToken" type="password" autocomplete="off" /></label>
+        <div class="actions">
+          <button class="btn-secondary" type="button" data-action="test-polaris">Test connection</button>
+        </div>
+        <div class="test-result" data-test-result="polaris" hidden></div>
+      </section>
+
+      <!-- Step 6: Directory -->
+      <section class="step-panel" data-step="6" aria-labelledby="step6-title">
+        <h2 id="step6-title">Directory <span class="step-optional">(optional)</span></h2>
+        <p class="step-desc">Pull user accounts from Entra ID or LDAP/Active Directory.</p>
+        <div class="tabs" role="tablist">
+          <button type="button" class="tab active" data-tab="entra">Entra ID</button>
+          <button type="button" class="tab" data-tab="ldap">LDAP / AD</button>
+        </div>
+        <div class="tab-panel" data-tab-panel="entra">
+          <label>Tenant ID<input name="directory.entra.tenantId" autocomplete="off" /></label>
+          <div class="form-row-2">
+            <label>Client ID<input name="directory.entra.clientId" autocomplete="off" /></label>
+            <label>Client secret<input name="directory.entra.clientSecret" type="password" autocomplete="off" /></label>
+          </div>
+        </div>
+        <div class="tab-panel" data-tab-panel="ldap" hidden>
+          <label>LDAP URL<input name="directory.ldap.url" placeholder="ldaps://dc.example.com:636" /></label>
+          <div class="form-row-2">
+            <label>Bind DN<input name="directory.ldap.bindDN" autocomplete="off" /></label>
+            <label>Bind password<input name="directory.ldap.bindPassword" type="password" autocomplete="off" /></label>
+          </div>
+          <label>User base<input name="directory.ldap.userBase" placeholder="DC=example,DC=com" /></label>
+          <label>User filter<input name="directory.ldap.userFilter" value="(objectClass=user)" /></label>
+        </div>
+        <div class="actions">
+          <button class="btn-secondary" type="button" data-action="test-directory">Test</button>
+        </div>
+        <div class="test-result" data-test-result="directory" hidden></div>
+      </section>
+
+      <!-- Step 7: Mail -->
+      <section class="step-panel" data-step="7" aria-labelledby="step7-title">
+        <h2 id="step7-title">Mail (SMTP) <span class="step-optional">(optional)</span></h2>
+        <p class="step-desc">Used for ticket notifications.</p>
+        <div class="form-row-2">
+          <label>SMTP host<input name="mail.host" autocomplete="off" /></label>
+          <label>Port<input name="mail.port" type="number" value="587" /></label>
+        </div>
+        <div class="form-row-2">
+          <label>Username<input name="mail.username" autocomplete="off" /></label>
+          <label>Password<input name="mail.password" type="password" autocomplete="off" /></label>
+        </div>
+        <label>From address<input name="mail.from" type="email" placeholder="celphei@example.com" /></label>
+        <label class="checkbox-row">
+          <input name="mail.useTLS" type="checkbox" checked />
+          <span>Require TLS</span>
+        </label>
+        <div class="actions">
+          <button class="btn-secondary" type="button" data-action="test-smtp">Test SMTP</button>
+        </div>
+        <div class="test-result" data-test-result="mail" hidden></div>
+      </section>
+
+      <!-- Step 8: Review -->
+      <section class="step-panel" data-step="8" aria-labelledby="step8-title">
+        <h2 id="step8-title">Review &amp; commit</h2>
+        <p class="step-desc">Once you click Complete Setup, the database is created (if needed), migrations run, the admin account is provisioned, and the app restarts into normal mode.</p>
+        <div class="review-grid" id="review-grid"></div>
+      </section>
+
+      <!-- Finalize progress -->
+      <section class="step-panel" data-step="finalize" hidden>
+        <h2>Finishing setup…</h2>
+        <div class="setup-progress">
+          <div class="spinner"></div>
+          <div class="progress-text" id="finalize-status">Creating database…</div>
+        </div>
+      </section>
+
+      <!-- Footer with nav buttons -->
+      <div class="step-footer">
+        <button class="btn-secondary" type="button" id="btn-back">Back</button>
+        <button class="btn-skip" type="button" id="btn-skip">Skip</button>
+        <button class="btn-primary" type="button" id="btn-next">Continue</button>
+        <button class="btn-primary" type="button" id="btn-commit" hidden>Complete setup</button>
+      </div>
+    </div>
+  </div>
+  <script src="/js/setup.js" defer></script>
+</body>
+</html>

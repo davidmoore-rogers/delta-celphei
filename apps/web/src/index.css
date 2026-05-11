@@ -1,0 +1,58 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand: 74 158 255;
+  --brand-fg: 255 255 255;
+  --surface-1: 248 250 252;
+  --surface-2: 255 255 255;
+  --surface-3: 241 245 249;
+  --ink-1: 15 23 42;
+  --ink-2: 71 85 105;
+  --ink-3: 148 163 184;
+  --edge: 226 232 240;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface-1: 15 23 42;
+    --surface-2: 26 37 53;
+    --surface-3: 30 41 59;
+    --ink-1: 226 232 240;
+    --ink-2: 148 163 184;
+    --ink-3: 100 116 139;
+    --edge: 51 65 85;
+  }
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background: rgb(var(--surface-1));
+  color: rgb(var(--ink-1));
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button {
+  font-family: inherit;
+}
+
+input, textarea, select {
+  font-family: inherit;
+}
+
+.scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgb(var(--ink-3) / 0.4);
+  border-radius: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--ink-3) / 0.6);
+}

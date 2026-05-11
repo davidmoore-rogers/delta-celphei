@@ -1,0 +1,41 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: celphei-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: celphei
+      POSTGRES_PASSWORD: celphei
+      POSTGRES_DB: celphei
+    ports:
+      - "5432:5432"
+    volumes:
+      - celphei_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U celphei -d celphei"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: celphei-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    volumes:
+      - celphei_state:/app/state
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      LOG_LEVEL: info
+
+volumes:
+  celphei_pg_data:
+  celphei_state:

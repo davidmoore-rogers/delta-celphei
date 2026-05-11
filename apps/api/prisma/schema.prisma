@@ -1,0 +1,466 @@
+// Delta Celphei — Prisma schema (Phase 1 core + Phase 2+ tables defined now)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Identity & auth
+// ────────────────────────────────────────────────────────────────────────────
+
+enum Role {
+  Admin
+  Manager
+  HelpDesk
+  User
+}
+
+enum AuthProviderType {
+  local
+  saml
+  oidc
+  ldap
+  polaris
+}
+
+enum ManagerReportSource {
+  manual
+  entra
+  ad
+}
+
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  displayName    String
+  passwordHash   String?
+  federatedFrom  String?
+  externalId     String?
+  isActive       Boolean   @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  authProvider   AuthProvider? @relation(fields: [federatedFrom], references: [id], onDelete: SetNull)
+
+  roles              UserRoleAssignment[]
+  sessions           Session[]
+  apiTokens          ApiToken[]
+  reportsAsManager   ManagerReport[] @relation("ManagerReports_Manager")
+  reportsAsReport    ManagerReport[] @relation("ManagerReports_Report")
+  teamMemberships    TeamMember[]
+
+  ticketsCreated     Ticket[] @relation("TicketsByRequester")
+  ticketsAssigned    Ticket[] @relation("TicketsByAssignee")
+  tasksAssigned      Task[]   @relation("TasksByAssignee")
+  tasksCreated       Task[]   @relation("TasksByCreator")
+  comments           TicketComment[]
+  historyActions     TicketHistory[] @relation("HistoryByActor")
+  events             Event[]  @relation("EventsByActor")
+  approvalDecisions  ApprovalDecision[]
+
+  @@unique([federatedFrom, externalId], map: "user_federation_external_unique")
+  @@index([email])
+}
+
+model UserRoleAssignment {
+  userId String
+  role   Role
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, role])
+  @@index([role])
+}
+
+model ManagerReport {
+  id        String              @id @default(cuid())
+  managerId String
+  reportId  String
+  source    ManagerReportSource
+  createdAt DateTime            @default(now())
+
+  manager User @relation("ManagerReports_Manager", fields: [managerId], references: [id], onDelete: Cascade)
+  report  User @relation("ManagerReports_Report", fields: [reportId], references: [id], onDelete: Cascade)
+
+  @@unique([managerId, reportId])
+  @@index([reportId])
+}
+
+model AuthProvider {
+  id        String           @id @default(cuid())
+  type      AuthProviderType
+  name      String
+  config    Json
+  isEnabled Boolean          @default(true)
+  isDefault Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  users User[]
+
+  @@index([type])
+}
+
+model Session {
+  id         String   @id // sha256 of the opaque token
+  userId     String
+  csrfSecret String
+  ip         String?
+  userAgent  String?
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model ApiToken {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique
+  name       String
+  scopes     String[]  @default([])
+  expiresAt  DateTime?
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// App-wide settings
+// ────────────────────────────────────────────────────────────────────────────
+
+model Setting {
+  id              Int      @id @default(1) // singleton row
+  orgName         String   @default("Celphei")
+  logoUrl         String?
+  primaryColor    String   @default("#4a9eff")
+  loginBanner     String   @default("")
+  defaultTimeZone String   @default("UTC")
+  setupCompleted  Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Teams
+// ────────────────────────────────────────────────────────────────────────────
+
+model Team {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+
+  members TeamMember[]
+  tickets Ticket[]
+  tasks   Task[]
+}
+
+model TeamMember {
+  teamId   String
+  userId   String
+  addedAt  DateTime @default(now())
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([teamId, userId])
+  @@index([userId])
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Ticket types & tickets
+// ────────────────────────────────────────────────────────────────────────────
+
+enum TicketStatus {
+  Open
+  InProgress
+  Pending
+  Resolved
+  Closed
+  Cancelled
+}
+
+enum Priority {
+  P1
+  P2
+  P3
+  P4
+}
+
+model TicketType {
+  id               String   @id @default(cuid())
+  slug             String   @unique
+  name             String
+  prefix           String   @unique
+  isBuiltIn        Boolean  @default(false)
+  isActive         Boolean  @default(true)
+  tasksBlockClose  Boolean  @default(false)
+  schema           Json     @default("{\"fields\":[]}")
+  workflowConfig   Json     @default("{}")
+  nextNumber       Int      @default(1)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tickets       Ticket[]
+  approvalRules ApprovalRule[]
+}
+
+model Ticket {
+  id            String       @id @default(cuid())
+  ticketNumber  String       @unique
+  typeId        String
+  title         String
+  description   String       @default("")
+  status        TicketStatus @default(Open)
+  priority      Priority     @default(P3)
+  requesterId   String
+  assigneeId    String?
+  teamId        String?
+  customFields  Json         @default("{}")
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  closedAt      DateTime?
+
+  type      TicketType @relation(fields: [typeId], references: [id])
+  requester User       @relation("TicketsByRequester", fields: [requesterId], references: [id])
+  assignee  User?      @relation("TicketsByAssignee", fields: [assigneeId], references: [id])
+  team      Team?      @relation(fields: [teamId], references: [id])
+
+  tasks            Task[]
+  comments         TicketComment[]
+  history          TicketHistory[]
+  assets           PolarisAssetRef[]
+  approvalRequests ApprovalRequest[]
+
+  @@index([status, priority])
+  @@index([assigneeId, status])
+  @@index([requesterId])
+  @@index([teamId])
+  @@index([typeId])
+  @@index([createdAt])
+}
+
+enum TaskStatus {
+  Open
+  InProgress
+  Done
+  Cancelled
+}
+
+model Task {
+  id          String     @id @default(cuid())
+  taskNumber  String     @unique
+  ticketId    String
+  title       String
+  description String?
+  status      TaskStatus @default(Open)
+  assigneeId  String?
+  teamId      String?
+  dueAt       DateTime?
+  completedAt DateTime?
+  createdById String
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  ticket    Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  assignee  User?  @relation("TasksByAssignee", fields: [assigneeId], references: [id])
+  team      Team?  @relation(fields: [teamId], references: [id])
+  createdBy User   @relation("TasksByCreator", fields: [createdById], references: [id])
+
+  @@index([ticketId])
+  @@index([assigneeId, status])
+  @@index([teamId, status])
+}
+
+model TicketComment {
+  id         String   @id @default(cuid())
+  ticketId   String
+  authorId   String
+  body       String
+  isInternal Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author User   @relation(fields: [authorId], references: [id])
+
+  @@index([ticketId])
+}
+
+model TicketHistory {
+  id        String   @id @default(cuid())
+  ticketId  String
+  actorId   String?
+  action    String
+  changes   Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  actor  User?  @relation("HistoryByActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, createdAt])
+}
+
+model PolarisAssetRef {
+  id              String   @id @default(cuid())
+  ticketId        String
+  polarisAssetId  String   @db.Uuid
+  cachedName      String?
+  cachedType      String?
+  lastSyncedAt    DateTime @default(now())
+  createdAt       DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@unique([ticketId, polarisAssetId])
+  @@index([polarisAssetId])
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Events (cross-cutting audit/activity log)
+// ────────────────────────────────────────────────────────────────────────────
+
+enum EventSeverity {
+  info
+  warn
+  error
+}
+
+model Event {
+  id         String        @id @default(cuid())
+  occurredAt DateTime      @default(now())
+  severity   EventSeverity @default(info)
+  source     String
+  actorId    String?
+  subject    String?
+  message    String
+  data       Json          @default("{}")
+
+  actor User? @relation("EventsByActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([occurredAt(sort: Desc)])
+  @@index([source, occurredAt(sort: Desc)])
+  @@index([severity, occurredAt(sort: Desc)])
+  @@index([actorId])
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Approvals (Phase 2 — defined now)
+// ────────────────────────────────────────────────────────────────────────────
+
+enum ApprovalState {
+  Pending
+  Approved
+  Rejected
+  Cancelled
+}
+
+enum ApprovalDecisionKind {
+  Approve
+  Reject
+}
+
+model Group {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+
+  members        GroupMember[]
+  approvalRules  ApprovalRule[]
+}
+
+model GroupMember {
+  groupId String
+  userId  String
+  addedAt DateTime @default(now())
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@id([groupId, userId])
+  @@index([userId])
+}
+
+model ApprovalRule {
+  id              String   @id @default(cuid())
+  ticketTypeId    String
+  name            String
+  conditionExpr   Json
+  requiredCount   Int      @default(1)
+  approverGroupId String?
+  approverRole    Role?
+  order           Int      @default(0)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  ticketType TicketType @relation(fields: [ticketTypeId], references: [id], onDelete: Cascade)
+  group      Group?     @relation(fields: [approverGroupId], references: [id], onDelete: SetNull)
+  requests   ApprovalRequest[]
+
+  @@index([ticketTypeId])
+}
+
+model ApprovalRequest {
+  id            String        @id @default(cuid())
+  ticketId      String
+  ruleId        String
+  requiredCount Int
+  state         ApprovalState @default(Pending)
+  createdAt     DateTime      @default(now())
+  resolvedAt    DateTime?
+
+  ticket    Ticket             @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  rule      ApprovalRule       @relation(fields: [ruleId], references: [id])
+  decisions ApprovalDecision[]
+
+  @@index([ticketId])
+  @@index([state])
+}
+
+model ApprovalDecision {
+  id         String                @id @default(cuid())
+  requestId  String
+  approverId String
+  decision   ApprovalDecisionKind
+  comment    String?
+  decidedAt  DateTime              @default(now())
+
+  request  ApprovalRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  approver User            @relation(fields: [approverId], references: [id])
+
+  @@index([requestId])
+  @@index([approverId])
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Integrations (Phase 3 — defined now)
+// ────────────────────────────────────────────────────────────────────────────
+
+model IntegrationConnection {
+  id             String    @id @default(cuid())
+  kind           String
+  name           String
+  config         Json      @default("{}")
+  isEnabled      Boolean   @default(true)
+  lastSyncAt     DateTime?
+  lastSyncStatus String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([kind])
+}
